@@ -4,6 +4,7 @@ from discord import app_commands, ui
 import sqlite3
 import os
 import re
+import random
 from datetime import datetime
 
 # ==========================================
@@ -28,24 +29,24 @@ def query_db(query, args=(), one=False, commit=False):
     conn.close()
     return (rv[0] if rv else None) if one else rv
 
-# إنشاء وتحديث الجداول لدعم الأنظمة الجديدة (العضويات والإشعارات والتعليقات)
+# تحديث قاعدة البيانات لدعم الرومات الجديدة
 def setup_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (discord_id INTEGER PRIMARY KEY, username TEXT UNIQUE, verified INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (discord_id INTEGER PRIMARY KEY, username TEXT UNIQUE, verified INTEGER DEFAULT 0, account_type TEXT DEFAULT 'شخصي', notifications INTEGER DEFAULT 1)''')
     c.execute('''CREATE TABLE IF NOT EXISTS follows (follower_id INTEGER, followed_id INTEGER, PRIMARY KEY(follower_id, followed_id))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS settings (guild_id INTEGER PRIMARY KEY, app_channel INTEGER, tweet_channel INTEGER, verify_channel INTEGER, admin_channel INTEGER, embed_color TEXT, admin_role INTEGER, panel_img TEXT, signature TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS tweets (message_id INTEGER PRIMARY KEY, author_id INTEGER, likes_count INTEGER DEFAULT 0, rts_count INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS settings (guild_id INTEGER PRIMARY KEY, app_channel INTEGER, tweet_channel INTEGER, market_channel INTEGER, gram_channel INTEGER, verify_channel INTEGER, admin_channel INTEGER, embed_color TEXT, admin_role INTEGER, panel_img TEXT, apps_img TEXT, signature TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS tweets (message_id INTEGER PRIMARY KEY, author_id INTEGER, comments_open INTEGER DEFAULT 1)''')
     c.execute('''CREATE TABLE IF NOT EXISTS tweet_likes (message_id INTEGER, user_id INTEGER, PRIMARY KEY(message_id, user_id))''')
     c.execute('''CREATE TABLE IF NOT EXISTS tweet_rts (message_id INTEGER, user_id INTEGER, PRIMARY KEY(message_id, user_id))''')
     c.execute('''CREATE TABLE IF NOT EXISTS hashtags (tag TEXT PRIMARY KEY, count INTEGER DEFAULT 0)''')
     
-    # حقن الحقول الجديدة بأمان في حال كانت قاعدة البيانات قديمة
-    try: c.execute("ALTER TABLE users ADD COLUMN notifications INTEGER DEFAULT 1")
+    # محاولة إضافة الأعمدة الجديدة إن لم تكن موجودة
+    try: c.execute("ALTER TABLE settings ADD COLUMN market_channel INTEGER")
     except sqlite3.OperationalError: pass
-    try: c.execute("ALTER TABLE users ADD COLUMN account_type TEXT DEFAULT 'شخصي'")
+    try: c.execute("ALTER TABLE settings ADD COLUMN gram_channel INTEGER")
     except sqlite3.OperationalError: pass
-    try: c.execute("ALTER TABLE tweets ADD COLUMN comments_open INTEGER DEFAULT 1")
+    try: c.execute("ALTER TABLE settings ADD COLUMN apps_img TEXT")
     except sqlite3.OperationalError: pass
     
     conn.commit()
@@ -53,483 +54,425 @@ def setup_db():
 
 setup_db()
 
-# دالة إرسال الإشعارات التلقائية للخاص
-async def send_notification(target_id, text):
+# دالة مساعدة للحصول على يوزر الشخص من اسمه
+def get_user_id_by_username(username):
+    res = query_db("SELECT discord_id FROM users WHERE username = ?", (username.lower(),), one=True)
+    return res[0] if res else None
+
+async def send_notification(target_id, text, embed_title="🔔 إشعار جديد - U app", color=discord.Color.blue(), view=None):
     status = query_db("SELECT notifications FROM users WHERE discord_id = ?", (target_id,), one=True)
-    if status and status[0] == 0:
-        return # الإشعارات مغلقة من قبل المستخدم
+    if status and status[0] == 0: return
     try:
         user = bot.get_user(target_id) or await bot.fetch_user(target_id)
         if user:
-            embed = discord.Embed(title="🔔 إشعار جديد - U app", description=text, color=discord.Color.blue())
-            await user.send(embed=embed)
+            embed = discord.Embed(title=embed_title, description=text, color=color)
+            await user.send(embed=embed, view=view)
     except Exception:
-        pass # في حال كانت خاصية الخاص مغلقة عند العضو
+        pass
 
-# دالة فحص وحظر الروابط الخارجية
 def secure_text(text):
     urls = re.findall(r'https?://\S+', text)
     for url in urls:
-        if "discord" in url and ("attachments" in url or "asset" in url):
-            continue
-        if any(ext in url.lower() for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-            continue
-        return False
+        if "discord" not in url and not any(ext in url.lower() for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+            return False
     return True
 
 # ==========================================
-# 🎛️ النوافذ المنبثقة والواجهات الفرعية (Modals & Sub-Views)
+# 🎛️ النوافذ المنبثقة (Modals) الأساسية للتطبيقات
 # ==========================================
 
-class RegisterModal(ui.Modal, title="إنشاء حساب تويتر جديد"):
-    username = ui.TextInput(label="اسم المستخدم (اليوزر بدون @)", placeholder="مثال: omar_rashidi", min_length=3, max_length=15)
+class RegisterModal(ui.Modal, title="إنشاء حساب U-Phone"):
+    username = ui.TextInput(label="اسم المستخدم (بدون @)", min_length=3, max_length=15)
     async def on_submit(self, interaction: discord.Interaction):
         user_input = self.username.value.strip().lower()
         if not re.match(r"^[a-zA-Z0-9_]+$", user_input):
-            return await interaction.response.send_message("❌ خطأ: اليوزر يجب أن يحتوي على أحرف، أرقام، أو شرطة سفلية فقط!", ephemeral=True)
+            return await interaction.response.send_message("❌ اليوزر يجب أن يحتوي على أحرف وأرقام فقط!", ephemeral=True)
         try:
             query_db("INSERT INTO users (discord_id, username) VALUES (?, ?)", (interaction.user.id, user_input), commit=True)
-            await interaction.response.send_message(f"🎉 تم إنشاء حسابك بنجاح بـ يوزر: `@{user_input}`", ephemeral=True)
+            await interaction.response.send_message(f"🎉 تم إنشاء حسابك بنجاح: `@{user_input}`", ephemeral=True)
         except sqlite3.IntegrityError:
-            await interaction.response.send_message("❌ خطأ: اسم المستخدم هذا مستخدم بالفعل في حساب آخر بالمدينة!", ephemeral=True)
+            await interaction.response.send_message("❌ اليوزر مستخدم بالفعل!", ephemeral=True)
 
-class TweetModal(ui.Modal, title="إرسال تغريدة جديدة"):
-    content = ui.TextInput(label="محتوى التغريدة", style=discord.TextStyle.paragraph, placeholder="اكتب ما يدور في ذهنك هنا... يمكنك منشن أي شخص بـ @يوزر", max_length=280)
-    media = ui.TextInput(label="رابط صورة المرفق (اختياري)", placeholder="ضع رابط الصورة المباشر هنا فقط...", required=False)
-    comments = ui.TextInput(label="هل تريد فتح التعليقات؟ (نعم / لا)", min_length=2, max_length=3, placeholder="اكتب نعم أو لا فقط")
+class TweetModal(ui.Modal, title="كتابة تغريدة 🐦"):
+    content = ui.TextInput(label="محتوى التغريدة", style=discord.TextStyle.paragraph, max_length=280)
+    media = ui.TextInput(label="رابط صورة (اختياري)", required=False)
+    comments = ui.TextInput(label="فتح التعليقات؟ (نعم / لا)", min_length=2, max_length=3)
     
     async def on_submit(self, interaction: discord.Interaction):
         user_data = query_db("SELECT username, verified, account_type FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-        if not user_data:
-            return await interaction.response.send_message("❌ ليس لديك حساب! قم بإنشاء حساب أولاً من اللوحة الرئيسية.", ephemeral=True)
+        if not user_data: return await interaction.response.send_message("❌ سجل حسابك أولاً!", ephemeral=True)
         
-        comments_allowed = self.comments.value.strip()
-        if comments_allowed not in ["نعم", "لا"]:
-            return await interaction.response.send_message("❌ خطأ: يجب كتابة 'نعم' أو 'لا' فقط في خانة فتح التعليقات!", ephemeral=True)
-        
+        if self.comments.value.strip() not in ["نعم", "لا"]:
+            return await interaction.response.send_message("❌ اكتب نعم أو لا فقط!", ephemeral=True)
+            
         text = self.content.value
         media_url = self.media.value.strip() if self.media.value else None
-        
         if not secure_text(text) or (media_url and not secure_text(media_url)):
-            return await interaction.response.send_message("❌ خطأ أمني: تم حظر التغريدة! لا يُسمح بنشر روابط خارجية، مسموح فقط بروابط الصور.", ephemeral=True)
-        
-        setting = query_db("SELECT tweet_channel, embed_color, signature FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
-        if not setting: return await interaction.response.send_message("❌ لم يتم ضبط إعدادات البوت بالسيرفر بعد.", ephemeral=True)
-        
-        tweet_chan = interaction.guild.get_channel(setting[0])
-        color = int(setting[1], 16)
-        signature_text = setting[2]
-        
-        tags = re.findall(r'#\w+', text)
-        for tag in tags:
-            query_db("INSERT INTO hashtags (tag, count) VALUES (?, 1) ON CONFLICT(tag) DO UPDATE SET count = count + 1", (tag,), commit=True)
+            return await interaction.response.send_message("❌ تم حظر روابط خارجية!", ephemeral=True)
             
-        # تحديد الإيموجي المناسب للشارة المعتمدة بناءً على نوع الحساب الموثق
-        badge = ""
-        if user_data[1] == 1:
-            if user_data[2] == "حساب حكومي": badge = " 🏛️"
-            elif user_data[2] == "حساب تجاري": badge = " 💼"
-            elif user_data[2] == "حساب موثق": badge = " ☑️"
-            else: badge = " ☑️"
-            
-        username = f"{interaction.user.display_name} (@{user_data[0]}){badge}"
-            
+        settings = query_db("SELECT tweet_channel, embed_color, signature FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
+        t_chan = interaction.guild.get_channel(settings[0])
+        color = int(settings[1], 16)
+        
+        badge = " 🏛️" if user_data[2] == "حساب حكومي" else " 💼" if user_data[2] == "حساب تجاري" else " ☑️" if user_data[1] else ""
         embed = discord.Embed(description=text, color=color, timestamp=datetime.utcnow())
-        embed.set_author(name=username, icon_url=interaction.user.display_avatar.url)
+        embed.set_author(name=f"{interaction.user.display_name} (@{user_data[0]}){badge}", icon_url=interaction.user.display_avatar.url)
         if media_url: embed.set_image(url=media_url)
-        embed.set_footer(text="U app | مدينة يو ار جي")
-        embed.add_field(name="📊 إحصائيات التفاعل:", value="❤️ الإعجابات: **0** | 🔁 إعادة النشر: **0**", inline=False)
+        embed.set_footer(text="U app | Twitter")
+        embed.add_field(name="📊 إحصائيات:", value="❤️ الإعجابات: **0** | 🔁 إعادة النشر: **0**")
         
-        tweet_msg = await tweet_chan.send(embed=embed)
+        msg = await t_chan.send(embed=embed)
+        if settings[2]: await t_chan.send(content=settings[2])
         
-        # إرسال خط السيرفر (التوقيع) منفصلاً تلقائياً بعد التغريدة مباشرة وليس بداخلها
-        if signature_text:
-            await tweet_chan.send(content=signature_text)
-            
-        is_open = 1 if comments_allowed == "نعم" else 0
+        is_open = 1 if self.comments.value.strip() == "نعم" else 0
+        await msg.edit(view=TweetActionView(msg.id))
+        query_db("INSERT INTO tweets (message_id, author_id, comments_open) VALUES (?, ?, ?)", (msg.id, interaction.user.id, is_open), commit=True)
         
-        await tweet_msg.edit(view=TweetActionView(tweet_msg.id))
-        query_db("INSERT INTO tweets (message_id, author_id, comments_open) VALUES (?, ?, ?)", (tweet_msg.id, interaction.user.id, is_open), commit=True)
-        
-        # 🔔 [نظام المنشن الفعلي للتغريدات] 🔔
+        # نظام المنشن
         mentions = re.findall(r'@([a-zA-Z0-9_]+)', text)
-        for mentioned_user in list(set(mentions)): # تصفية الأسماء المكررة لتفادي إرسال تنبيهات مزعجة لنفس الشخص
-            if mentioned_user.lower() != user_data[0].lower(): # منع البوت من إرسال تنبيه للشخص إذا منشن نفسه
-                target_res = query_db("SELECT discord_id FROM users WHERE username = ?", (mentioned_user.lower(),), one=True)
-                if target_res:
-                    await send_notification(target_res[0], f"👤 قام `@{user_data[0]}` بالإشارة إليك في تغريدته الأخيرة!\n🔗 [إضغط هنا للانتقال ومساندة التغريدة]({tweet_msg.jump_url})")
+        for m in set(mentions):
+            if m.lower() != user_data[0]:
+                tid = get_user_id_by_username(m)
+                if tid: await send_notification(tid, f"👤 قام `@{user_data[0]}` بذكرك في تغريدة!\n🔗 [انتقال للتغريدة]({msg.jump_url})")
+                
+        await interaction.response.send_message("✅ تم النشر!", ephemeral=True)
 
-        await interaction.response.send_message("✅ تم نشر تغريدتك بنجاح في روم التغريدات!", ephemeral=True)
-
-# واجهة اختيار نوع العضوية المنسدلة الفرعية
-class MembershipSelect(ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="حساب حكومي (القطاعات الرسمية)", value="حساب حكومي", emoji="🏛️"),
-            discord.SelectOption(label="حساب تجاري (الشركات والمحلات)", value="حساب تجاري", emoji="💼"),
-            discord.SelectOption(label="حساب موثق (للمشاهير والأعيان)", value="حساب موثق", emoji="☑️")
-        ]
-        super().__init__(placeholder="اختر نوع العضوية المطلوبة...", options=options, custom_id="membership_sub_select")
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(MembershipModal(self.values[0]))
-
-class MembershipTypeView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(MembershipSelect())
-
-class MembershipModal(ui.Modal):
-    username = ui.TextInput(label="يوزر الحساب المراد توثيقه (بدون @)", placeholder="مثال: omar_rashidi")
-    reason = ui.TextInput(label="سبب واستحقاق طلب العضوية بالمدينة", style=discord.TextStyle.paragraph, placeholder="اكتب مبرراتك أو منصبك هنا...")
+class ShadowMailModal(ui.Modal, title="رسالة مجهولة 🥷"):
+    target = ui.TextInput(label="يوزر المستهدف (بدون @)")
+    content = ui.TextInput(label="الرسالة", style=discord.TextStyle.paragraph)
     
-    def __init__(self, account_type: str):
-        super().__init__(title=f"تقديم طلب: {account_type}")
-        self.account_type = account_type
-
     async def on_submit(self, interaction: discord.Interaction):
-        user_data = query_db("SELECT verified FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-        if not user_data: return await interaction.response.send_message("❌ ليس لديك حساب أصلاً لتقديم طلب له!", ephemeral=True)
+        tid = get_user_id_by_username(self.target.value.strip())
+        if not tid: return await interaction.response.send_message("❌ اليوزر غير موجود!", ephemeral=True)
         
-        setting = query_db("SELECT verify_channel, admin_role FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
-        v_chan = interaction.guild.get_channel(setting[0])
-        admin_role_id = setting[1]
-        role_mention = f"<@&{admin_role_id}>" if admin_role_id else ""
+        embed = discord.Embed(title="⚠️ رسالة مشفرة من جهة مجهولة", description=self.content.value, color=discord.Color.darker_grey())
+        await send_notification(tid, text="", embed_title="⚠️ رسالة مشفرة", color=discord.Color.darker_grey())
         
-        embed = discord.Embed(title="🔔 طلب تقديم عضوية جديد", color=discord.Color.gold())
-        embed.add_field(name="العضو المقدم:", value=interaction.user.mention)
-        embed.add_field(name="اليوزر بالسيستم:", value=f"@{self.username.value}")
-        embed.add_field(name="نوع العضوية المقترحة:", value=f"**{self.account_type}**", inline=False)
-        embed.add_field(name="السبب المذكور:", value=self.reason.value, inline=False)
-        
-        await v_chan.send(content=role_mention, embed=embed, view=VerifyActionView(interaction.user.id, self.account_type))
-        await interaction.response.send_message("✅ تم إرسال طلب عضويتك الفاخرة للإدارة بنجاح ويتم مراجعتها الآن.", ephemeral=True)
+        target_user = bot.get_user(tid) or await bot.fetch_user(tid)
+        await target_user.send(embed=embed)
+        await interaction.response.send_message("🥷 تم تشفير وإرسال الرسالة.", ephemeral=True)
 
-class NotificationToggleView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-    @ui.button(label="تبديل حالة الإشعارات (تفعيل/تعطيل) 🔄", style=discord.ButtonStyle.primary)
-    async def toggle(self, interaction: discord.Interaction, button: ui.Button):
-        status = query_db("SELECT notifications FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-        new_status = 0 if (status and status[0] == 1) else 1
-        query_db("UPDATE users SET notifications = ? WHERE discord_id = ?", (new_status, interaction.user.id), commit=True)
-        current = "مفعلة 🔔" if new_status == 1 else "معطلة 🔕"
-        await interaction.response.edit_message(content=f"✅ تم تحديث إعداداتك بنجاح! الإشعارات الآن: **{current}**", view=None)
-
-class SearchModal(ui.Modal, title="البحث عن حساب شخص"):
-    username = ui.TextInput(label="يوزر الحساب المراد البحث عنه", placeholder="اكتب اليوزر بدون @")
+class ChatAppModal(ui.Modal, title="محادثة شات أب 💬"):
+    target = ui.TextInput(label="يوزر المستهدف (بدون @)")
+    content = ui.TextInput(label="الرسالة", style=discord.TextStyle.paragraph)
+    
     async def on_submit(self, interaction: discord.Interaction):
-        target = self.username.value.strip().lower()
-        res = query_db("SELECT discord_id, verified, account_type FROM users WHERE username = ?", (target,), one=True)
-        if not res: return await interaction.response.send_message("❌ لم يتم العثور على أي حساب بهذا اليوزر في المدينة.", ephemeral=True)
+        sender = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
+        if not sender: return await interaction.response.send_message("❌ سجل حسابك أولاً!", ephemeral=True)
         
-        followers = len(query_db("SELECT follower_id FROM follows WHERE followed_id = ?", (res[0],)))
-        following = len(query_db("SELECT followed_id FROM follows WHERE follower_id = ?", (res[0],)))
+        tid = get_user_id_by_username(self.target.value.strip())
+        if not tid: return await interaction.response.send_message("❌ اليوزر غير موجود!", ephemeral=True)
         
-        acc_str = f"موثق ({res[2]})" if res[1] == 1 else "غير موثق / شخصي"
-        embed = discord.Embed(title=f"👤 ملف الحساب: @{target}", color=discord.Color.blue())
-        embed.add_field(name="صاحب الحساب:", value=f"<@{res[0]}>")
-        embed.add_field(name="فئة الحساب:", value=acc_str)
-        embed.add_field(name="المتابعون:", value=f"**{followers}** متابع")
-        embed.add_field(name="يتابع:", value=f"**{following}** شخص")
+        target_user = bot.get_user(tid) or await bot.fetch_user(tid)
+        embed = discord.Embed(title="💬 محادثة شات أب جديدة", description=f"**من:** `@{sender[0]}`\n\n**الرسالة:**\n{self.content.value}", color=discord.Color.green())
         
-        await interaction.response.send_message(embed=embed, view=FollowActionView(res[0]), ephemeral=True)
+        await target_user.send(embed=embed, view=ChatQuickReplyView(interaction.user.id, sender[0]))
+        await interaction.response.send_message("✅ تم الإرسال للخاص!", ephemeral=True)
 
-class ReplyModal(ui.Modal, title="الرد على التغريدة"):
-    reply_text = ui.TextInput(label="اكتب ردك هنا", style=discord.TextStyle.paragraph, max_length=200)
-    def __init__(self, message: discord.Message):
+class ChatQuickReplyModal(ui.Modal, title="الرد السريع ↩️"):
+    content = ui.TextInput(label="رسالتك", style=discord.TextStyle.paragraph)
+    def __init__(self, target_id, sender_name):
         super().__init__()
-        self.message = message
+        self.target_id = target_id
+        self.sender_name = sender_name
+        
     async def on_submit(self, interaction: discord.Interaction):
-        user_data = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-        if not user_data: return await interaction.response.send_message("❌ يجب إنشاء حساب أولاً للرد!", ephemeral=True)
+        sender = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
+        target_user = bot.get_user(self.target_id) or await bot.fetch_user(self.target_id)
         
-        text = self.reply_text.value
-        if not secure_text(text): return await interaction.response.send_message("❌ محظور وضع روابط خارجية!", ephemeral=True)
+        embed = discord.Embed(title="💬 رد جديد - شات أب", description=f"**من:** `@{sender[0]}`\n\n**الرسالة:**\n{self.content.value}", color=discord.Color.green())
+        await target_user.send(embed=embed, view=ChatQuickReplyView(interaction.user.id, sender[0]))
+        await interaction.response.send_message("✅ تم إرسال الرد!", ephemeral=True)
+
+class ChatQuickReplyView(ui.View):
+    def __init__(self, target_id, target_name):
+        super().__init__(timeout=None)
+        self.target_id = target_id
+        self.target_name = target_name
+    @ui.button(label="الرد السريع ↩️", style=discord.ButtonStyle.success)
+    async def reply(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(ChatQuickReplyModal(self.target_id, self.target_name))
+
+class MarketModal(ui.Modal):
+    title_inp = ui.TextInput(label="العنوان والسلعة")
+    desc = ui.TextInput(label="التفاصيل والسعر", style=discord.TextStyle.paragraph)
+    img = ui.TextInput(label="رابط صورة (اختياري)", required=False)
+    
+    def __init__(self, is_dark: bool):
+        super().__init__(title="سوق الإنترنت المظلم ☠️" if is_dark else "سوق المدينة 🚗")
+        self.is_dark = is_dark
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
+        if not user: return await interaction.response.send_message("❌ سجل حسابك!", ephemeral=True)
         
-        thread = self.message.thread
-        if thread is None:
-            thread = await self.message.create_thread(name=f"الردود على تغريدة @{user_data[0]}", auto_archive_duration=60)
+        settings = query_db("SELECT market_channel, signature FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
+        m_chan = interaction.guild.get_channel(settings[0])
+        
+        embed = discord.Embed(title=self.title_inp.value, description=self.desc.value, color=discord.Color.dark_theme() if self.is_dark else discord.Color.gold())
+        if self.img.value: embed.set_image(url=self.img.value)
+        
+        if self.is_dark:
+            embed.set_author(name="🥷 تاجر مجهول")
+            view = MarketDarkView(interaction.user.id)
+        else:
+            embed.set_author(name=f"إعلان من: @{user[0]}")
+            view = MarketLegalView(interaction.user.id, user[0])
             
-        rembed = discord.Embed(description=text, color=discord.Color.light_grey(), timestamp=datetime.utcnow())
-        rembed.set_author(name=f"رد من @{user_data[0]}", icon_url=interaction.user.display_avatar.url)
-        reply_msg = await thread.send(embed=rembed)
+        await m_chan.send(embed=embed, view=view)
+        if settings[1]: await m_chan.send(content=settings[1])
+        await interaction.response.send_message("✅ تم نشر إعلانك بالسوق!", ephemeral=True)
+
+class MarketLegalView(ui.View):
+    def __init__(self, owner_id, owner_name):
+        super().__init__(timeout=None)
+        self.owner_id = owner_id
+        self.owner_name = owner_name
+    @ui.button(label="تواصل مع البائع 📞", style=discord.ButtonStyle.primary)
+    async def contact(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(ChatQuickReplyModal(self.owner_id, self.owner_name))
+
+class MarketDarkView(ui.View):
+    def __init__(self, owner_id):
+        super().__init__(timeout=None)
+        self.owner_id = owner_id
+    @ui.button(label="شراء سري 💼", style=discord.ButtonStyle.danger)
+    async def secret_buy(self, interaction: discord.Interaction, button: ui.Button):
+        buyer = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
+        await send_notification(self.owner_id, f"💼 العضو `@{buyer[0] if buyer else 'مجهول'}` مهتم بشراء سلعتك بالإنترنت المظلم، تواصل معه بحذر!", color=discord.Color.dark_red(), view=ChatQuickReplyView(interaction.user.id, buyer[0] if buyer else "مجهول"))
+        await interaction.response.send_message("✅ تم إرسال رغبة الشراء للبائع سرياً.", ephemeral=True)
+
+class GramModal(ui.Modal, title="نشر يوميات 📸"):
+    content = ui.TextInput(label="التعليق على الصورة", max_length=100)
+    img = ui.TextInput(label="رابط الصورة (إلزامي)")
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        user = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
+        settings = query_db("SELECT gram_channel FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
+        g_chan = interaction.guild.get_channel(settings[0])
         
-        # 🔔 [نظام المنشن الفعلي للردود والتعليقات] 🔔
-        mentions = re.findall(r'@([a-zA-Z0-9_]+)', text)
-        for mentioned_user in list(set(mentions)):
-            if mentioned_user.lower() != user_data[0].lower():
-                target_res = query_db("SELECT discord_id FROM users WHERE username = ?", (mentioned_user.lower(),), one=True)
-                if target_res:
-                    await send_notification(target_res[0], f"💬 قام `@{user_data[0]}` بالإشارة إليك في رد جديد داخل ثيرد التغريدة!\n🔗 [إضغط هنا لعرض الرد والتعليق عليه]({reply_msg.jump_url})")
+        embed = discord.Embed(description=self.content.value, color=discord.Color.purple())
+        embed.set_author(name=f"📸 ستوري: @{user[0]}")
+        embed.set_image(url=self.img.value)
+        await g_chan.send(embed=embed, view=GramLikeView())
+        await interaction.response.send_message("✅ تم نشر الستوري!", ephemeral=True)
 
-        await interaction.response.send_message("✅ تم إضافة ردك داخل ثيرد التغريدة!", ephemeral=True)
+class GramLikeView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @ui.button(label="دعم وتفاعل 👍", style=discord.ButtonStyle.secondary)
+    async def support(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("❤️ تم إرسال تفاعلك للمشهور!", ephemeral=True)
 
 # ==========================================
-# 🔘 واجهات القوائم المنسدلة والتفاعلات الرئيسية
+# 🎮 ألعاب U-Play المتكاملة
 # ==========================================
 
-class MainSelect(ui.Select):
+class RPSView(ui.View):
+    def __init__(self, original_menu):
+        super().__init__(timeout=None)
+        self.original_menu = original_menu
+        
+    async def play(self, interaction, user_choice):
+        choices = {'rock': '🪨 حجر', 'paper': '📄 ورقة', 'scissors': '✂️ مقص'}
+        bot_choice = random.choice(list(choices.keys()))
+        
+        res = "تعادل 🤝"
+        if (user_choice == 'rock' and bot_choice == 'scissors') or \
+           (user_choice == 'paper' and bot_choice == 'rock') or \
+           (user_choice == 'scissors' and bot_choice == 'paper'):
+            res = "أنت الفائز! 🎉"
+        elif user_choice != bot_choice:
+            res = "البوت فاز! 🤖"
+            
+        embed = discord.Embed(title="✊ حجر ورقة مقص", description=f"أنت اخترت: {choices[user_choice]}\nالبوت اختار: {choices[bot_choice]}\n\n**النتيجة: {res}**", color=discord.Color.blue())
+        await interaction.response.edit_message(embed=embed, view=self.original_menu)
+
+    @ui.button(emoji="🪨", style=discord.ButtonStyle.primary)
+    async def btn_rock(self, interaction, button): await self.play(interaction, 'rock')
+    @ui.button(emoji="📄", style=discord.ButtonStyle.primary)
+    async def btn_paper(self, interaction, button): await self.play(interaction, 'paper')
+    @ui.button(emoji="✂️", style=discord.ButtonStyle.primary)
+    async def btn_scis(self, interaction, button): await self.play(interaction, 'scissors')
+
+class TicTacToeView(ui.View):
+    def __init__(self, original_menu):
+        super().__init__(timeout=None)
+        self.board = [0]*9
+        self.original_menu = original_menu
+        for i in range(9):
+            btn = ui.Button(label=" ", style=discord.ButtonStyle.secondary, custom_id=str(i), row=i//3)
+            btn.callback = self.btn_click
+            self.add_item(btn)
+
+    async def btn_click(self, interaction: discord.Interaction):
+        idx = int(interaction.data['custom_id'])
+        if self.board[idx] != 0: return await interaction.response.defer()
+        
+        self.board[idx] = 1 # User is 1 (X)
+        self.children[idx].label = "X"
+        self.children[idx].style = discord.ButtonStyle.success
+        self.children[idx].disabled = True
+        
+        # Bot move (random empty)
+        empty = [i for i, x in enumerate(self.board) if x == 0]
+        if empty:
+            bot_mv = random.choice(empty)
+            self.board[bot_mv] = 2 # Bot is 2 (O)
+            self.children[bot_mv].label = "O"
+            self.children[bot_mv].style = discord.ButtonStyle.danger
+            self.children[bot_mv].disabled = True
+            
+        await interaction.response.edit_message(view=self)
+
+class GuessNumberModal(ui.Modal, title="تخمين الرقم 🔢"):
+    guess = ui.TextInput(label="خمن رقم من 1 إلى 50")
+    def __init__(self, original_menu):
+        super().__init__()
+        self.original_menu = original_menu
+        self.secret = random.randint(1, 50)
+        
+    async def on_submit(self, interaction: discord.Interaction):
+        try: val = int(self.guess.value)
+        except: return await interaction.response.send_message("❌ ادخل رقماً!", ephemeral=True)
+        
+        res = "مبروك جبتها! 🎉" if val == self.secret else f"خطأ! الرقم كان {self.secret} 🤖"
+        embed = discord.Embed(title="🔢 نتيجة التخمين", description=res, color=discord.Color.orange())
+        await interaction.response.edit_message(embed=embed, view=self.original_menu)
+
+# ==========================================
+# 📱 القوائم المنسدلة (U-Phone UI)
+# ==========================================
+
+def get_app_menu(app_id):
+    select = ui.Select(placeholder="اختر الإجراء المطلوب 👇", custom_id="app_sub_menu")
+    
+    if app_id == "tw":
+        select.add_option(label="كتابة تغريدة", value="tw_write", emoji="📝")
+        select.add_option(label="حسابي والترند", value="tw_profile", emoji="👤")
+        select.add_option(label="الإشعارات", value="tw_notif", emoji="⚙️")
+    elif app_id == "sh":
+        select.add_option(label="إرسال رسالة مجهولة", value="sh_send", emoji="✉️")
+    elif app_id == "ch":
+        select.add_option(label="بدء محادثة جديدة", value="ch_new", emoji="💬")
+    elif app_id == "mk":
+        select.add_option(label="نشر إعلان قانوني", value="mk_legal", emoji="🚗")
+        select.add_option(label="نشر إعلان مظلم", value="mk_dark", emoji="☠️")
+    elif app_id == "gr":
+        select.add_option(label="نشر ستوري", value="gr_story", emoji="📸")
+    elif app_id == "pl":
+        select.add_option(label="حجر ورقة مقص", value="pl_rps", emoji="✊")
+        select.add_option(label="إكس أو", value="pl_xo", emoji="❌")
+        select.add_option(label="تخمين الرقم", value="pl_guess", emoji="🔢")
+    elif app_id == "id":
+        select.add_option(label="إنشاء حساب", value="id_reg", emoji="📝")
+        select.add_option(label="تقديم عضوية", value="id_verify", emoji="🏅")
+        
+    select.add_option(label="العودة للشاشة الرئيسية", value="back_main", emoji="🔙")
+    select.add_option(label="إغلاق الجوال", value="close_phone", emoji="❌")
+    
+    view = ui.View(timeout=None)
+    view.add_item(select)
+    return view
+
+class MainAppSelect(ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="إنشاء حساب 📝", value="reg", emoji="📝"),
-            discord.SelectOption(label="إرسال تغريدة 🐦", value="tweet", emoji="🐦"),
-            discord.SelectOption(label="تقديم عضوية 🏅", value="membership", emoji="🏅"),
-            discord.SelectOption(label="حسابي والترند 👤", value="profile", emoji="👤"),
-            discord.SelectOption(label="البحث عن حساب 🔍", value="search", emoji="🔍"),
-            discord.SelectOption(label="إعدادات الإشعارات ⚙️", value="settings_menu", emoji="⚙️"),
-            discord.SelectOption(label="إعادة الاختيار 🔄", value="reset", emoji="🔄")
+            discord.SelectOption(label="تويتر", description="التدوين والمنشن", value="app_tw", emoji="🐦"),
+            discord.SelectOption(label="شات أب", description="مراسلات شخصية", value="app_ch", emoji="💬"),
+            discord.SelectOption(label="رسائل مجهولة", description="رسائل مشفرة وسرية", value="app_sh", emoji="🥷"),
+            discord.SelectOption(label="سوق المدينة", description="إعلانات وممنوعات", value="app_mk", emoji="🛒"),
+            discord.SelectOption(label="يو غرام", description="يوميات وستوريات", value="app_gr", emoji="📸"),
+            discord.SelectOption(label="U-Play", description="ألعاب وتسلية", value="app_pl", emoji="🎮"),
+            discord.SelectOption(label="إدارة الهوية", description="التسجيل والتوثيق", value="app_id", emoji="🛂"),
+            discord.SelectOption(label="إغلاق الجوال", value="close_phone", emoji="❌")
         ]
-        super().__init__(placeholder="القائمة الرئيسية لـ U app | إضغط هنا 👇", options=options, custom_id="main_menu_select")
+        super().__init__(placeholder="📱 الشاشة الرئيسية - اختر تطبيقاً...", options=options, custom_id="main_apps_select")
 
     async def callback(self, interaction: discord.Interaction):
         val = self.values[0]
-        if val == "reg":
-            await interaction.response.send_modal(RegisterModal())
-        elif val == "tweet":
-            await interaction.response.send_modal(TweetModal())
-        elif val == "membership":
-            await interaction.response.send_message("⚙️ الرجاء اختيار نوع العضوية التي ترغب بالتقديم عليها للحصول على الشارة الفخمة:", view=MembershipTypeView(), ephemeral=True)
-        elif val == "search":
-            await interaction.response.send_modal(SearchModal())
-        elif val == "reset":
-            await interaction.response.send_message("🔄 تمت إعادة تعيين خيار القائمة المنسدلة بنجاح.", ephemeral=True)
-        elif val == "settings_menu":
-            status = query_db("SELECT notifications FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-            current = "مفعلة 🔔" if (not status or status[0] == 1) else "معطلة 🔕"
-            await interaction.response.send_message(f"⚙️ **إعدادات التنبيهات الحالية لملفك:** {current}\nتلقي الإشعارات في الخاص عند حصول تفاعل (لايك، ريتويت، متابعة، منشن) مفعل بشكل تلقائي ما لم تقم بإغلاقه.", view=NotificationToggleView(), ephemeral=True)
-        elif val == "profile":
-            data = query_db("SELECT username, verified, account_type FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-            if not data: return await interaction.response.send_message("❌ ليس لديك حساب مسجل بعد!", ephemeral=True)
+        if val == "close_phone":
+            await interaction.message.delete()
+        elif val.startswith("app_"):
+            app_code = val.split("_")[1]
+            embed = discord.Embed(title=f"📱 تطبيق مفتوح", description="الرجاء اختيار الإجراء من القائمة بالأسفل:", color=discord.Color.dark_grey())
+            await interaction.response.edit_message(embed=embed, view=get_app_menu(app_code))
+
+class MainAppMenuReceiver(commands.Cog):
+    def __init__(self, bot): self.bot = bot
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if not interaction.is_select_menu() or interaction.data['custom_id'] != "app_sub_menu": return
+        val = interaction.data['values'][0]
+        
+        # خيارات العودة والإغلاق
+        if val == "close_phone": return await interaction.message.delete()
+        if val == "back_main":
+            settings = query_db("SELECT apps_img FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
+            embed = discord.Embed(color=discord.Color.dark_theme()).set_image(url=settings[0] if settings else None)
+            view = ui.View(timeout=None)
+            view.add_item(MainAppSelect())
+            return await interaction.response.edit_message(embed=embed, view=view)
             
-            followers = len(query_db("SELECT follower_id FROM follows WHERE followed_id = ?", (interaction.user.id,)))
-            following = len(query_db("SELECT followed_id FROM follows WHERE follower_id = ?", (interaction.user.id,)))
-            
-            top_tags = query_db("SELECT tag, count FROM hashtags ORDER BY count DESC LIMIT 5")
-            trend_text = "\n".join([f"🔥 {t[0]} ({t[1]} تغريدة)" for t in top_tags]) if top_tags else "لا توجد هاشتاقات نشطة حالياً."
-            
-            acc_type_str = f"موثق ({data[2]})" if data[1] == 1 else "حساب شخصي عادي"
-            embed = discord.Embed(title=f"📱 بيانات حسابك: @{data[0]}", color=discord.Color.blue())
-            embed.add_field(name="فئة العضوية:", value=acc_type_str, inline=False)
-            embed.add_field(name="المتابعون:", value=f"**{followers}** متابع", inline=True)
-            embed.add_field(name="يتابع:", value=f"**{following}** شخص", inline=True)
-            embed.add_field(name="📈 ترندات المدينة الأكثر تداولاً (Top 5):", value=trend_text, inline=False)
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-class MainPanelView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(MainSelect())
-
-class TweetActionView(ui.View):
-    def __init__(self, message_id: int):
-        super().__init__(timeout=None)
-        self.message_id = message_id
-
-    async def update_embed(self, interaction: discord.Interaction):
-        likes = query_db("SELECT COUNT(*) FROM tweet_likes WHERE message_id = ?", (self.message_id,), one=True)[0]
-        rts = query_db("SELECT COUNT(*) FROM tweet_rts WHERE message_id = ?", (self.message_id,), one=True)[0]
-        embed = interaction.message.embeds[0]
-        embed.set_field_at(0, name="📊 إحصائيات التفاعل:", value=f"❤️ الإعجابات: **{likes}** | 🔁 إعادة النشر: **{rts}**", inline=False)
-        await interaction.message.edit(embed=embed)
-
-    @ui.button(label="أعجبني ❤️", style=discord.ButtonStyle.secondary, custom_id="tweet_like")
-    async def like_click(self, interaction: discord.Interaction, button: ui.Button):
-        liked = query_db("SELECT 1 FROM tweet_likes WHERE message_id = ? AND user_id = ?", (self.message_id, interaction.user.id), one=True)
-        author_data = query_db("SELECT author_id FROM tweets WHERE message_id = ?", (self.message_id,), one=True)
+        # استدعاء المودلز
+        if val == "id_reg": await interaction.response.send_modal(RegisterModal())
+        elif val == "id_verify": await interaction.response.send_message("تقديم العضوية يتطلب تواصل إداري.", ephemeral=True)
+        elif val == "tw_write": await interaction.response.send_modal(TweetModal())
+        elif val == "sh_send": await interaction.response.send_modal(ShadowMailModal())
+        elif val == "ch_new": await interaction.response.send_modal(ChatAppModal())
+        elif val == "mk_legal": await interaction.response.send_modal(MarketModal(False))
+        elif val == "mk_dark": await interaction.response.send_modal(MarketModal(True))
+        elif val == "gr_story": await interaction.response.send_modal(GramModal())
         
-        if liked:
-            query_db("DELETE FROM tweet_likes WHERE message_id = ? AND user_id = ?", (self.message_id, interaction.user.id), commit=True)
-        else:
-            query_db("INSERT INTO tweet_likes (message_id, user_id) VALUES (?, ?)", (self.message_id, interaction.user.id), commit=True)
-            if author_data and author_data[0] != interaction.user.id:
-                user_info = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-                uname = user_info[0] if user_info else interaction.user.display_name
-                await send_notification(author_data[0], f"❤️ قام المستخدم `@{uname}` بالإعجاب بتغريدتك للتو!")
-                
-        await interaction.response.defer()
-        await self.update_embed(interaction)
+        # استدعاء الألعاب
+        elif val == "pl_rps":
+            embed = discord.Embed(title="✊ حجر ورقة مقص", description="اختر حركتك!")
+            await interaction.response.edit_message(embed=embed, view=RPSView(get_app_menu('pl')))
+        elif val == "pl_xo":
+            embed = discord.Embed(title="❌ إكس أو ضد البوت", description="أنت X، ابدأ اللعب!")
+            await interaction.response.edit_message(embed=embed, view=TicTacToeView(get_app_menu('pl')))
+        elif val == "pl_guess":
+            await interaction.response.send_modal(GuessNumberModal(get_app_menu('pl')))
 
-    @ui.button(label="إعادة نشر 🔁", style=discord.ButtonStyle.secondary, custom_id="tweet_rt")
-    async def rt_click(self, interaction: discord.Interaction, button: ui.Button):
-        rted = query_db("SELECT 1 FROM tweet_rts WHERE message_id = ? AND user_id = ?", (self.message_id, interaction.user.id), one=True)
-        author_data = query_db("SELECT author_id FROM tweets WHERE message_id = ?", (self.message_id,), one=True)
-        
-        if rted:
-            query_db("DELETE FROM tweet_rts WHERE message_id = ? AND user_id = ?", (self.message_id, interaction.user.id), commit=True)
-        else:
-            query_db("INSERT INTO tweet_rts (message_id, user_id) VALUES (?, ?)", (self.message_id, interaction.user.id), commit=True)
-            if author_data and author_data[0] != interaction.user.id:
-                user_info = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-                uname = user_info[0] if user_info else interaction.user.display_name
-                await send_notification(author_data[0], f"🔁 قام المستخدم `@{uname}` بإعادة نشر تغريدتك في المدينة!")
-                
-        await interaction.response.defer()
-        await self.update_embed(interaction)
-
-    @ui.button(label="رد 💬", style=discord.ButtonStyle.secondary, custom_id="tweet_reply")
-    async def reply_click(self, interaction: discord.Interaction, button: ui.Button):
-        status = query_db("SELECT comments_open FROM tweets WHERE message_id = ?", (self.message_id,), one=True)
-        if status and status[0] == 0:
-            return await interaction.response.send_message("❌ خطأ: قام صاحب التغريدة بإغلاق التعليقات لهذه التغريدة مسبقاً!", ephemeral=True)
-        await interaction.response.send_modal(ReplyModal(interaction.message))
-
-class FollowActionView(ui.View):
-    def __init__(self, target_id: int):
-        super().__init__(timeout=30)
-        self.target_id = target_id
-        
-    @ui.button(label="متابعة / إلغاء المتابعة ➕", style=discord.ButtonStyle.primary)
-    async def follow_toggle(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id == self.target_id:
-            return await interaction.response.send_message("❌ لا يمكنك متابعة نفسك يا بطل!", ephemeral=True)
-        
-        is_following = query_db("SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?", (interaction.user.id, self.target_id), one=True)
-        user_info = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-        uname = user_info[0] if user_info else interaction.user.display_name
-        
-        if is_following:
-            query_db("DELETE FROM follows WHERE follower_id = ? AND followed_id = ?", (interaction.user.id, self.target_id), commit=True)
-            await interaction.response.send_message("❌ تم إلغاء متابعة الحساب.", ephemeral=True)
-        else:
-            query_db("INSERT INTO follows (follower_id, followed_id) VALUES (?, ?)", (interaction.user.id, self.target_id), commit=True)
-            await send_notification(self.target_id, f"➕ بدأ المستخدم `@{uname}` في متابعة حسابك الآن!")
-            await interaction.response.send_message("✅ تم متابعة الحساب بنجاح!", ephemeral=True)
-
-class VerifyActionView(ui.View):
-    def __init__(self, target_user_id: int, account_type: str):
-        super().__init__(timeout=None)
-        self.target_user_id = target_user_id
-        self.account_type = account_type
-        
-    @ui.button(label="قبول العضوية ✅", style=discord.ButtonStyle.success)
-    async def approve(self, interaction: discord.Interaction, button: ui.Button):
-        query_db("UPDATE users SET verified = 1, account_type = ? WHERE discord_id = ?", (self.account_type, self.target_user_id), commit=True)
-        await interaction.response.send_message(f"✅ تم قبول العضوية بنجاح بنوع: **{self.account_type}** وتحديث شارات الحساب!", ephemeral=True)
-        await send_notification(self.target_user_id, f"🎉 تهانينا! وافقت الإدارة على طلبك وتم توثيق حسابك كـ **{self.account_type}**")
-        await interaction.message.delete()
-        
-    @ui.button(label="رفض الطلب ❌", style=discord.ButtonStyle.danger)
-    async def deny(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message("❌ تم رفض طلب العضوية بنجاح.", ephemeral=True)
-        await interaction.message.delete()
+class StartPhoneView(ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @ui.button(label="تشغيل الجوال 📱", style=discord.ButtonStyle.primary, custom_id="btn_start_phone")
+    async def start(self, interaction: discord.Interaction, button: ui.Button):
+        settings = query_db("SELECT apps_img FROM settings WHERE guild_id = ?", (interaction.guild.id,), one=True)
+        embed = discord.Embed(color=discord.Color.dark_theme()).set_image(url=settings[0] if settings else None)
+        view = ui.View(timeout=None)
+        view.add_item(MainAppSelect())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # ==========================================
-# 🛑 أوامر السلاش (Slash Commands) والإدارة
+# 🛑 أوامر السلاش (التسطيب)
 # ==========================================
 
 @bot.event
 async def on_ready():
-    print(f'✅ تم تشغيل البوت بنجاح باسم: {bot.user.name}')
-    await bot.change_presence(activity=discord.Game(name="U app | مدينة يو ار جي"))
-    bot.add_view(MainPanelView())
-    bot.add_view(AdminControlView())
-    try:
-        synced = await bot.tree.sync()
-        print(f"🔄 تم مزامنة {len(synced)} أوامر سلاش بنجاح.")
-    except Exception as e:
-        print(f"❌ خطأ في المزامنة: {e}")
+    await bot.add_cog(MainAppMenuReceiver(bot))
+    bot.add_view(StartPhoneView())
+    print(f'✅ البوت جاهز: {bot.user.name}')
+    await bot.tree.sync()
 
-@bot.tree.command(name="شرح", description="شرح استخدام تطبيق تويتر الخاص بالمدينة")
-async def help_cmd(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="📘 دليل استخدام تطبيق U app المطور",
-        description="نظام تويتر المتكامل لمدينة يو ار جي:\n\n"
-                    "1️⃣ **القائمة المنسدلة:** تحتوي على إعداد الإشعارات والتحكم الكامل بالملفات والعضويات.\n"
-                    "2️⃣ **تقديم العضوية:** يمنحك شارات مخصصة (حكومي 🏛️، تجاري 💼، موثق ☑️).\n"
-                    "3️⃣ **حماية التعليقات:** يمكنك التحكم بقفل أو فتح الردود على كل تغريدة تنشرها.\n"
-                    "4️⃣ **الإشعارات المباشرة:** تصلك إشعارات تفاعلات حسابك (شاملاً التنبيه عند المنشن) بالخاص تلقائياً.",
-        color=discord.Color.blue()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="تسطيب_البوت", description="إعداد وتجهيز منظومة تويتر رول بلي المحدثة بالكامل (للإدارة)")
+@bot.tree.command(name="تسطيب_الجوال", description="إعداد منظومة الجوال بالكامل")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_cmd(interaction: discord.Interaction, 
-                    روم_التطبيق: discord.TextChannel, 
+                    روم_الجوال: discord.TextChannel, 
                     روم_التغريدات: discord.TextChannel, 
-                    روم_طلبات_التوثيق: discord.TextChannel, 
-                    روم_الادارة: discord.TextChannel, 
-                    رتبة_المسؤولين: discord.Role, 
-                    رابط_صورة_البانل: str, 
-                    خط_السيرفر: str, 
-                    لون_الامبد: str = "00acee"):
+                    روم_السوق: discord.TextChannel,
+                    روم_اليوميات: discord.TextChannel,
+                    صورة_الغلاف: str, 
+                    صورة_الشاشة_الداخلية: str):
     
-    query_db('''INSERT OR REPLACE INTO settings (guild_id, app_channel, tweet_channel, verify_channel, admin_channel, embed_color, admin_role, panel_img, signature) 
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-              (interaction.guild.id, روم_التطبيق.id, روم_التغريدات.id, روم_طلبات_التوثيق.id, روم_الادارة.id, لون_الامبد, رتبة_المسؤولين.id, رابط_صورة_البانل, خط_السيرفر), commit=True)
+    query_db('''INSERT OR REPLACE INTO settings (guild_id, app_channel, tweet_channel, market_channel, gram_channel, panel_img, apps_img) 
+              VALUES (?, ?, ?, ?, ?, ?, ?)''', 
+              (interaction.guild.id, روم_الجوال.id, روم_التغريدات.id, روم_السوق.id, روم_اليوميات.id, صورة_الغلاف, صورة_الشاشة_الداخلية), commit=True)
 
-    panel_embed = discord.Embed(
-        title="📱 تطبيق U app | اللوحة الرئيسية",
-        description="مرحباً بك في منصة تويتر الرسمية المخصصة لسكان مدينة يو ار جي.\n\n"
-                    "يمكنك التحكم التام بحسابك والتواصل الرقمي المميز من خلال القائمة المنسدلة بالأسفل 👇",
-        color=int(لون_الامبد, 16)
-    )
-    panel_embed.set_image(url=رابط_صورة_البانل)
-    panel_embed.set_footer(text="U app © جميع الحقوق محفوظة لـ مدينة يو ار جي")
-    
-    await روم_التطبيق.send(embed=panel_embed, view=MainPanelView())
-    if خط_السيرفر:
-        await روم_التطبيق.send(content=خط_السيرفر) # إرسال خط السيرفر منفصلاً تلقائياً تحت اللوحة الرئيسية
-    
-    admin_embed = discord.Embed(title="⚙️ لوحة تحكم الإدارة السرية", description="أدوات إدارة وتعديل السيستم وتصفير الحسابات.", color=discord.Color.red())
-    await روم_الادارة.send(embed=admin_embed, view=AdminControlView())
-    if خط_السيرفر:
-        await روم_الادارة.send(content=خط_السيرفر) # إرسال خط السيرفر منفصلاً تلقائياً تحت بانل الإدارة
-        
-    await interaction.response.send_message("✅ تم إعداد المنظومة بنظام الفصل الجديد للخط، وتصحيح الكلمات الإملائية بنجاح!", ephemeral=True)
+    embed = discord.Embed(color=discord.Color.dark_theme()).set_image(url=صورة_الغلاف)
+    await روم_الجوال.send(embed=embed, view=StartPhoneView())
+    await interaction.response.send_message("✅ تم إعداد جوال المدينة وتسطيب التطبيقات بنجاح!", ephemeral=True)
 
-@bot.tree.command(name="مطورين", description="عرض معلومات المبرمج المطور للنظام")
-async def dev_cmd(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="💻 عن المطور",
-        description="نظام URG System v2.5\n\nالمبرمج:\n**f_arooq004**\n\nجميع الحقوق محفوظة ©",
-        color=discord.Color.dark_grey()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# ==========================================
-# 🛠️ لوحة تحكم الإدارة (روم الإدارة)
-# ==========================================
-
-class AdminControlView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label="حذف حساب 🗑️", style=discord.ButtonStyle.danger, custom_id="adm_del")
-    async def del_acc(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(AdminDeleteModal())
-
-    @ui.button(label="تعديل يوزر ✏️", style=discord.ButtonStyle.secondary, custom_id="adm_edit")
-    async def edit_acc(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(AdminEditModal())
-
-class AdminDeleteModal(ui.Modal, title="حذف حساب عضو"):
-    username = ui.TextInput(label="يوزر الحساب المراد حذفه")
-    async def on_submit(self, interaction: discord.Interaction):
-        target = self.username.value.strip().lower()
-        res = query_db("SELECT discord_id FROM users WHERE username = ?", (target,), one=True)
-        if not res: return await interaction.response.send_message("❌ اليوزر غير موجود بالسيستم.", ephemeral=True)
-        query_db("DELETE FROM users WHERE username = ?", (target,), commit=True)
-        query_db("DELETE FROM follows WHERE follower_id = ? OR followed_id = ?", (res[0], res[0]), commit=True)
-        await interaction.response.send_message(f"🗑️ تم حذف حساب `@{target}` وجميع بياناته ومتابعيه بنجاح!", ephemeral=True)
-
-class AdminEditModal(ui.Modal, title="تعديل يوزر عضو يدوياً"):
-    old_user = ui.TextInput(label="اليوزر الحالي")
-    new_user = ui.TextInput(label="اليوزر الجديد")
-    async def on_submit(self, interaction: discord.Interaction):
-        old = self.old_user.value.strip().lower()
-        new = self.new_user.value.strip().lower()
-        try:
-            query_db("UPDATE users SET username = ? WHERE username = ?", (new, old), commit=True)
-            await interaction.response.send_message(f"✏️ تم تعديل اليوزر بنجاح من `@{old}` إلى `@{new}`.", ephemeral=True)
-        except sqlite3.IntegrityError:
-            await interaction.response.send_message("❌ اليوزر الجديد مكرر وموجود مسبقاً!", ephemeral=True)
-
-# تشغيل البوت
 token = os.getenv("DISCORD_TOKEN")
-if token:
-    bot.run(token)
-else:
-    print("❌ خطأ: لم يتم العثور على المتغير البيئي لتوكن البوت DISCORD_TOKEN!")
+if token: bot.run(token)
+else: print("❌ لم يتم العثور على التوكن!")
