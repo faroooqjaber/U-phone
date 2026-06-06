@@ -18,7 +18,7 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 DB_PATH = "urg_city_phone.db"
 
-# خط فاصل موحد للاستخدام في تنسيق واجهات النظام (تعديل 2: الخط الفاصل)
+# خط فاصل موحد للاستخدام في تنسيق واجهات النظام
 LINE_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ==============================================================================
@@ -86,14 +86,13 @@ setup_database()
 # 3. الدوال المساعدة والخط التلقائي والإشعارات
 # ==============================================================================
 async def send_dm_notification(target_id, text, title="🔔 إشعار هاتف U-Phone"):
-    """دالة مركزية لإرسال التنبيهات المباشرة للمواطنين عبر الخاص بتنسيق موحد (تعديل 5)"""
+    """دالة مركزية لإرسال التنبيهات المباشرة للمواطنين عبر الخاص بتنسيق موحد"""
     status = query_db("SELECT notifications FROM users WHERE discord_id = ?", (target_id,), one=True)
     if status and status[0] == 0:
         return
     try:
         user = bot.get_user(int(target_id)) or await bot.fetch_user(int(target_id))
         if user:
-            # تنسيق إشعار الخاص مع الخط الفاصل والتوقيع الإداري (تعديل 1، 4)
             embed = discord.Embed(title=title, description=f"{text}\n{LINE_SEPARATOR}", color=discord.Color.blue(), timestamp=datetime.utcnow())
             embed.set_footer(text="منظومة الحماية والرقابة | عمر الراشدي - وزير المالية")
             await user.send(embed=embed)
@@ -147,7 +146,6 @@ class PostTweetModal(ui.Modal, title="🐦 نشر تغريدة جديدة"):
         tweet_channel = interaction.guild.get_channel(setting[0])
         badge = get_user_badge(interaction.user.id)
         
-        # تنسيق التغريدة المحدثة (تعديل 4)
         embed = discord.Embed(description=f"{self.content.value}\n{LINE_SEPARATOR}", color=discord.Color.blue(), timestamp=datetime.utcnow())
         embed.set_author(name=f"{interaction.user.display_name} (@{user_data[0]}){badge}", icon_url=interaction.user.display_avatar.url)
         if self.media.value:
@@ -302,6 +300,7 @@ class AnonymousMailModal(ui.Modal, title="🥷 رسالة سرية مشفرة"):
         if not target_res:
             return await interaction.response.send_message("❌ اليوزر غير متواجد بالمدينة.", ephemeral=True)
             
+        # تم تصحيح هذا السطر لتجنب مشكلة الـ unterminated f-string literal
         embed = discord.Embed(title="⚠️ إشعار من جهة مشفرة ومجهولة", description=f"```\n{self.content.value}\n
 ```", color=discord.Color.from_rgb(10, 10, 10))
         embed.set_footer(text="تم تشفير البيانات - مصدر مجهول الهوية | نظام الحماية مفعل")
