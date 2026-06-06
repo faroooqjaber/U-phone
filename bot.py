@@ -297,27 +297,19 @@ class AnonymousMailModal(ui.Modal, title="🥷 رسالة سرية مشفرة"):
     
     async def on_submit(self, interaction: discord.Interaction):
         target_res = query_db("SELECT discord_id FROM users WHERE username = ?", (self.target.value.strip().lower(),), one=True)
+      async def on_submit(self, interaction: discord.Interaction):
+        target_res = query_db("SELECT discord_id FROM users WHERE username = ?", (self.target.value.strip().lower(),), one=True)
         if not target_res:
             return await interaction.response.send_message("❌ اليوزر غير متواجد بالمدينة.", ephemeral=True)
             
- embed = discord.Embed(title="⚠️ إشعار من جهة مشفرة ومجهولة", description=f"```\n{self.content.value}\n```", color=discord.Color.from_rgb(10, 10, 10))
+        embed = discord.Embed(title="⚠️ إشعار من جهة مشفرة ومجهولة", description=f"```\n{self.content.value}\n```", color=discord.Color.from_rgb(10, 10, 10))
         embed.set_footer(text="تم تشفير البيانات - مصدر مجهول الهوية | نظام الحماية مفعل")
+        try:
+            t_user = bot.get_user(target_res[0]) or await bot.fetch_user(target_res[0])
+            await t_user.send(embed=embed)
+            await interaction.response.send_message("🥷 تمت عملية الإرسال بنجاح وتعمية الهوية المرجعية.", ephemeral=True)
         except:
             await interaction.response.send_message("❌ فشل الإرسال، المستهدف يغلق الخاص.", ephemeral=True)
-
-class QuickReplyReceiverModal(ui.Modal, title="↩️ إرسال رد سريع"):
-    """نافذة الرد السريع الفوري على مراسلات شات أب الواردة عبر الخاص"""
-    content = ui.TextInput(label="الرسالة", style=discord.TextStyle.paragraph)
-    
-    def __init__(self, target_id, target_name):
-        super().__init__()
-        self.target_id, self.target_name = int(target_id), target_name
-        
-    async def on_submit(self, interaction: discord.Interaction):
-        sender = query_db("SELECT username FROM users WHERE discord_id = ?", (interaction.user.id,), one=True)
-        badge = get_user_badge(interaction.user.id)
-        
-        embed = discord.Embed(title="💬 شات أب - رد جديد", description=f"{LINE_SEPARATOR}\n{self.content.value}\n{LINE_SEPARATOR}", color=discord.Color.green())
         embed.set_author(name=f"من: @{sender[0]}{badge}", icon_url=interaction.user.display_avatar.url)
         view = ui.View(timeout=None).add_item(ui.Button(label="رد سريع ↩️", style=discord.ButtonStyle.success, custom_id=f"ch_msg_{interaction.user.id}_{sender[0]}"))
         try:
