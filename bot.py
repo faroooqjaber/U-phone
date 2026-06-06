@@ -301,7 +301,7 @@ class AnonymousMailModal(ui.Modal, title="🥷 رسالة سرية مشفرة"):
             return await interaction.response.send_message("❌ اليوزر غير متواجد بالمدينة.", ephemeral=True)
             
         # تم تصحيح هذا السطر لتجنب مشكلة الـ unterminated f-string literal
-        embed = discord.Embed(title="⚠️ إشعار من جهة مشفرة ومجهولة", description=f"```\n{self.content.value}\n
+   embed = discord.Embed(title="⚠️ إشعار من جهة مشفرة ومجهولة", description="```\n" + self.content.value + "\n```", color=discord.Color.from_rgb(10, 10, 10))
 ```", color=discord.Color.from_rgb(10, 10, 10))
         embed.set_footer(text="تم تشفير البيانات - مصدر مجهول الهوية | نظام الحماية مفعل")
         try:
